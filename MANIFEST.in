@@ -1,0 +1,4 @@
+include run.sh
+recursive-include assets *.cast *.gif *.png
+recursive-include tools *.py
+recursive-include tests *.py
