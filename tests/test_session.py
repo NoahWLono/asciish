@@ -28,13 +28,14 @@ def test_logical_size_accounts_for_glyphs_status_and_last_column():
 
 
 class OuterTerminal:
-    def __init__(self, args, columns=181, rows=57):
+    def __init__(self, args, columns=181, rows=57, bootstrap=None):
         self.master, self.slave = pty.openpty()
         self.resize(columns, rows)
         self.before = termios.tcgetattr(self.slave)
         env = dict(os.environ, PYTHONPATH=str(Path(__file__).parents[1] / "src"))
+        entrypoint = ["-m", "asciish"] if bootstrap is None else ["-c", bootstrap]
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "asciish", *args],
+            [sys.executable, *entrypoint, *args],
             stdin=self.slave, stdout=self.slave, stderr=self.slave, env=env,
         )
         self.output = bytearray()
@@ -64,8 +65,15 @@ class OuterTerminal:
         self.wait_for(lambda: self.process.poll() is not None)
         while select.select([self.master], [], [], 0)[0]:
             self.pump(0)
-        assert self.process.returncode == expected
-        assert termios.tcgetattr(self.slave) == self.before
+        assert self.process.returncode == expected, bytes(self.output[-4000:])
+        restored = termios.tcgetattr(self.slave)
+        expected_attrs = self.before.copy()
+        if sys.platform == "darwin":
+            # Darwin sets this transient bit when TCSANOW enables ICANON.
+            # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/tty.c#L1358-L1391
+            restored[3] &= ~termios.PENDIN
+            expected_attrs[3] &= ~termios.PENDIN
+        assert restored == expected_attrs
         assert b"\x1b[?1049l" in self.output
 
     def close(self):
@@ -293,6 +301,29 @@ def test_closed_child_stdio_does_not_change_child_exit_status(outer):
     code = "import os,time,sys; [os.close(fd) for fd in (0, 1, 2)]; time.sleep(.2); sys.exit(7)"
     terminal = outer(["--", sys.executable, "-c", code])
     terminal.finish(7)
+
+
+def test_nonblocking_read_retries_when_readiness_changes(outer):
+    bootstrap = (
+        "import errno, os, sys\n"
+        "from asciish.cli import main\n"
+        "real_read = os.read\n"
+        "injected = False\n"
+        "def read(fd, count):\n"
+        "    global injected\n"
+        "    if fd > 2 and not injected:\n"
+        "        injected = True\n"
+        "        raise BlockingIOError(errno.EAGAIN, 'simulated readiness race')\n"
+        "    return real_read(fd, count)\n"
+        "os.read = read\n"
+        "sys.exit(main())\n"
+    )
+    terminal = outer(
+        ["--", sys.executable, "-c", "import sys; print('HELLO'); sys.exit(7)"],
+        bootstrap=bootstrap,
+    )
+    terminal.finish(7)
+    assert b"HHH" in terminal.output
 
 
 @pytest.mark.parametrize(

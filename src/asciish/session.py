@@ -184,6 +184,9 @@ def run(command: list[str], *, color: bool = True, ink: str | None = None) -> in
             if master in readable:
                 try:
                     data = os.read(master, 65536)
+                except BlockingIOError:
+                    # PTY readiness can change between select() and read().
+                    continue
                 except OSError as error:
                     if error.errno not in (errno.EIO, errno.EBADF):
                         raise
