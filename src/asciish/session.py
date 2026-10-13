@@ -52,7 +52,16 @@ def _reap(pid: int, status: int | None) -> int:
             found, result = os.waitpid(pid, os.WNOHANG)
             if found:
                 return result
-            os.killpg(pid, sig)
+            try:
+                os.killpg(pid, sig)
+            except PermissionError:
+                # Darwin can report EPERM for a group whose members have just
+                # become zombies. Reap first, then target our direct child if
+                # the group has gone away but the child is still running.
+                found, result = os.waitpid(pid, os.WNOHANG)
+                if found:
+                    return result
+                os.kill(pid, sig)
         except ProcessLookupError:
             pass
         deadline = time.monotonic() + (0.3 if sig != signal.SIGKILL else 1.0)

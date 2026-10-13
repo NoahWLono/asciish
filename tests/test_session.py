@@ -326,6 +326,28 @@ def test_nonblocking_read_retries_when_readiness_changes(outer):
     assert b"HHH" in terminal.output
 
 
+def test_cleanup_can_signal_child_when_group_signaling_is_denied(outer, tmp_path):
+    ready = tmp_path / "ready"
+    bootstrap = (
+        "import errno, os, sys\n"
+        "from asciish.cli import main\n"
+        "def killpg(pid, sig):\n"
+        "    raise PermissionError(errno.EPERM, 'group is no longer signalable')\n"
+        "os.killpg = killpg\n"
+        "sys.exit(main())\n"
+    )
+    code = (
+        "import signal,sys,time\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+        "open(sys.argv[1], 'w').write('ready')\n"
+        "time.sleep(60)\n"
+    )
+    terminal = outer(["--", sys.executable, "-c", code, str(ready)], bootstrap=bootstrap)
+    terminal.wait_for(ready.exists)
+    os.write(terminal.master, b"\x1d")
+    terminal.finish()
+
+
 @pytest.mark.parametrize(
     ("shell", "options"),
     [("bash", ["--noprofile", "--norc", "-i"]), ("fish", ["--no-config", "--interactive"])],
